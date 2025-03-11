@@ -1,0 +1,216 @@
+from airflow import DAG
+
+from airflow.operators.python import PythonOperator
+
+# from airflow.providers.amazon.aws.hooks.s3 import S3Hook
+
+# from airflow.providers.amazon.aws.hooks.base_aws import AwsBaseHook
+
+from datetime import datetime
+
+import csv
+
+import json
+
+import uuid
+
+import boto3
+
+
+def generate_manifest(source_bucket, manifest_key='manifest.csv', region_name='ap-southeast-2'):
+
+    s3 = boto3.client('s3',
+
+                      aws_access_key_id='XX',
+
+                      aws_secret_access_key='XXX'
+
+                      region_name='ap-southeast-2'
+
+    )
+
+
+    paginator = s3.get_paginator('list_objects_v2')
+
+    manifest_file = '/tmp/' + manifest_key  # Use Airflow temp directory
+
+
+    # Open file in write mode within the proper scope
+
+    with open(manifest_file, mode='w', newline='') as file:
+
+        writer = csv.writer(file)
+
+        
+
+        for page in paginator.paginate(Bucket=source_bucket):
+
+            if 'Contents' in page:
+
+                for obj in page['Contents']:
+
+                    writer.writerow([source_bucket, obj['Key']])
+
+                    print(f"Added: {obj['Key']}")
+
+
+    # Upload file after writing is completed
+
+    s3.upload_file(manifest_file, source_bucket, manifest_key)
+
+
+    return manifest_key
+
+
+
+def submit_batch_job(source_bucket, destination_bucket, manifest_key):
+
+    s3control = boto3.client('s3control',
+
+                      aws_access_key_id='XX',
+
+                      aws_secret_access_key='XXX'
+
+                      region_name='ap-southeast-2')
+
+    account_id = '286386330048'
+
+    request_token = str(uuid.uuid4())
+
+    
+
+
+    s3 = boto3.client('s3',
+
+                    aws_access_key_id='XX',
+
+                    aws_secret_access_key='XXX'
+
+                    region_name='ap-southeast-2'
+
+    )
+
+    response = s3.head_object(Bucket=source_bucket, Key=manifest_key)
+
+    etag = response.get("ETag", "").strip('"')
+
+    print(etag)
+
+
+
+    job_params = {
+
+        "Manifest": {
+
+            "Spec": {
+
+                "Format": "S3BatchOperations_CSV_20180820",
+
+                "Fields": ["Bucket", "Key"]
+
+            },
+
+            "Location": {
+
+                "ObjectArn": f"arn:aws:s3:::{source_bucket}/{manifest_key}",
+
+                "ETag": f"{etag}"
+
+            }
+
+        },
+
+        "Operation": {
+
+            "S3PutObjectCopy": {
+
+                "TargetResource": f"arn:aws:s3:::{destination_bucket}"
+
+            }
+
+        },
+
+        "Report": {
+
+            "Bucket": f"arn:aws:s3:::{destination_bucket}",
+
+            "Format": "Report_CSV_20180820",
+
+            "Enabled": True,
+
+            "Prefix": "batch-job-report",
+
+            "ReportScope": "AllTasks"
+
+        },
+
+        "ClientRequestToken": f'{request_token}',
+
+        "Priority": 10,
+
+        "Description": "copy objects job from airflow 3",
+
+        "RoleArn": f"arn:aws:iam::286386330048:role/airflow_role"
+
+    }
+
+    
+
+    print (job_params)
+
+    response = s3control.create_job(AccountId=account_id, ConfirmationRequired=False, **job_params)
+
+    print(f"Batch job submitted: {response['JobId']}")
+
+
+def trigger_s3_batch_move():
+
+    source_bucket = "home-lab-lh-bk"
+
+    destination_bucket = "devopsnomad.com.au"
+
+    region = 'ap-southeast-2'
+
+    manifest_key = generate_manifest(source_bucket)
+
+    submit_batch_job(source_bucket, destination_bucket, manifest_key)
+
+
+
+default_args = {
+
+    'owner': 'airflow',
+
+    'depends_on_past': False,
+
+    'start_date': datetime(2024, 3, 5),
+
+    'retries': 0,
+
+}
+
+
+dag = DAG(
+
+    's3_batch_move_dag_2',
+
+    default_args=default_args,
+
+    description='DAG to move S3 objects using AWS Batch Operations with a manifest file',
+
+    schedule_interval='@daily',
+
+    catchup=False
+
+)
+
+
+move_s3_batch_task = PythonOperator(
+
+    task_id='move_s3_batch_objects',
+
+    python_callable=trigger_s3_batch_move,
+
+    dag=dag
+
+)
