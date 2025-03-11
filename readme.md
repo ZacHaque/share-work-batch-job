@@ -14,3 +14,21 @@ aws s3control create-job
 --description "Running from CLI using manifest from airflow" 
 --no-confirmation-required
 ```
+
+
+user need 
+```
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Effect": "Allow",
+            "Action": [
+                "iam:PassRole",
+                "iam:GetRole"
+            ],
+            "Resource": "arn:aws:iam::286386330048:role/airflow_role"
+        }
+    ]
+}
+```
